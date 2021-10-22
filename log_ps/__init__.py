@@ -22,11 +22,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-__all__ = ["sample_ps", "PSLogger", "load_log", "summary_plot_ram"]
-
 _INTERVAL_MIN = 0.1  # Minimum sampling interval
 # These are constant, no need to always append
 _CONST_FIELDS = ["USER", "PID", "TT", "STARTED", "COMMAND"]
+
+
+def pkwargs(p, **kwargs):
+    """ Extracts prefixed keyword arguments from keyword arguments. """
+    return {k.replace(p, ""): v for k, v in kwargs.items() if k.startswith(p)}
 
 
 def load_log(fname):
@@ -41,11 +44,11 @@ def load_log(fname):
     Returns
     -------
     logs : dict
-        Logging stats as dictionary.
+        Logging stats as dictionary, values are numpy arrays.
     """
     with open(fname) as fp:
         logs = json.load(fp)
-    return logs
+    return{k: np.array(v) for k, v in logs.items()}
 
 
 def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
@@ -55,15 +58,17 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
 
     Parameters
     ----------
-    log : str or dict
+    log : str or dict or list of str or list of dict
         If str, is interpreted as a logging filename and tries to load the log
         stats from there. Otherwise expects a logging dict directly.
+        If encapsulated in a list, plots all logs into the same plot with the
+        filenames as legend entries.
     plotname : str or None, optional (default: None)
         If str, saves the plot under that filename using `plt.savefig`.
         Otherwise the plot is shown interactively with `plt.show()`.
     ram_unit : str, optional (default: 'MiB')
         Unit to plot the RSS usage in. Can be 'K(i)B', 'M(i)B', 'G(i)B'.
-    kwargs : plot arguments
+    kwargs : Plot arguments
         These are passed to the plot instances via a prefix:
         - 'fig_<name>' is passed to `plt.subplots(1, 1, ...)`. Example:
           `fig_figsize(10, 6)` makes a larger figure.
@@ -78,8 +83,13 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
         - 'savefig_<name>' is passed `plt.savefig(plotname, ...)`. Example:
           `savefig_dpi=200` for increasing the resolution.
         Others are:
+        - 'labels' sets a label for each line in an extra legend if mutiple
+          logs are given. Must be same length as `log` in that case.
         - 'cmap' to set the colormap from which the tag lines are taken if no
           explicit 'axvline_c' key is given.
+        - 'xlim', 'ylim' tuple to set the plot limits, passed to
+          `ax.set_[x,y]lim`.
+        - 'title' to set the plot title.
 
     Example
     -------
@@ -91,9 +101,24 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
     ```
     """
     if isinstance(log, str):
-        stats = load_log(log)
+        stats = [load_log(log)]
     elif isinstance(log, dict):
-        stats = log
+        stats = [log]
+    elif isinstance(log, list):
+        stats = []
+        for j, log_ in enumerate(log):
+            if isinstance(log_, str):
+                stats.append(load_log(log_))
+            elif isinstance(log_, dict):
+                stats.append(log_)
+            else:
+                raise TypeError(
+                    "`log` entry at {} must be either str or dict.".format(j))
+        if "labels" in kwargs and kwargs["labels"] is not None:
+            if len(kwargs["labels"]) != len(stats):
+                raise ValueError("Need a label for each log or set it to None.")
+        else:
+            kwargs["labels"] = None
     else:
         raise TypeError("`log` must be either str or dict.")
 
@@ -103,39 +128,194 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
         raise ValueError("`ram_unit` can be {}".format(
             ", ".join([k for k in units])))
 
-    rss = np.array(stats["RSS"], dtype=float) * units[ram_unit.lower()]
-    times = np.array(stats["sample_time"], dtype=float)
-    tags = stats["tags"]
+    # Put each one in overview plot
+    label_coll = []
+    fig, ax = plt.subplots(1, 1, **pkwargs("fig_", **kwargs))
+    for k, stats_ in enumerate(stats):
+        rss = np.array(stats_["RSS"], dtype=float) * units[ram_unit.lower()]
+        times = np.array(stats_["sample_time"], dtype=float)
+        tags = stats_["tags"]
 
-    fig, ax = plt.subplots(
-        1, 1, **{k.replace("fig_", ""): v for k, v in kwargs.items()
-                 if k.startswith("fig_")})
-    ax.plot(
-        times, rss,
-        **{k.replace("plot_", ""): v for k, v in kwargs.items()
-           if k.startswith("plot_")})
-    if "axvline_c" in kwargs:
-        colors = len(tags) * [kwargs.pop("axvline_c")]
-    else:
-        colors = plt.get_cmap(kwargs.get("cmap", "brg"))(
-            np.linspace(0, 1, len(tags)))
-    for j, tag in enumerate(tags):
-        ax.axvline(
-            tag[0], 0, 1, c=colors[j], label=tag[1],
-            **{k.replace("axvline_", ""): v for k, v in kwargs.items()
-               if k.startswith("axvline_")})
+        _l = ax.plot(times, rss, **pkwargs("plot_", **kwargs))
+        if kwargs["labels"] is not None:
+            label_coll.append((_l[0], kwargs["labels"][k]))
+
+        if "axvline_c" in kwargs:
+            colors = len(tags) * [kwargs.pop("axvline_c")]
+        else:
+            colors = plt.get_cmap(kwargs.get("cmap", "brg"))(
+                np.linspace(0, 1, len(tags)))
+        for j, tag in enumerate(tags):
+            ax.axvline(tag[0], 0, 1, c=colors[j], label=tag[1],
+                       **pkwargs("axvline_", **kwargs))
     ax.set_xlabel("Time in s")
     _unit_str = ram_unit.upper().replace("I", "i")
     ax.set_ylabel("RAM in {}".format(_unit_str))
+    if "xlim" in kwargs:
+        ax.set_xlim(kwargs["xlim"])
+    if "ylim" in kwargs:
+        ax.set_ylim(kwargs["ylim"])
+    if "title" in kwargs:
+        ax.set_title(kwargs["title"])
+
+    # Craft multiple legends. TODO: Independent loc keyword args
+    if label_coll:
+        leg1 = ax.legend(
+            [lbl[0] for lbl in label_coll], [lbl[1] for lbl in label_coll],
+            **pkwargs("legend_", **kwargs))
     if len(tags) > 0:
-        ax.legend(**{k.replace("legend_", ""): v for k, v in kwargs.items()
-                     if k.startswith("legend_")})
+        ax.legend(**pkwargs("legend_", **kwargs))
+        if label_coll:
+            ax.add_artist(leg1)
+
     if plotname is None:
         plt.show()
     else:
-        fig.savefig(
-            plotname, **{k.replace("savefig_", ""): v for k, v in kwargs.items()
-                         if k.startswith("savefig_")})
+        fig.savefig(plotname, **pkwargs("savefig_", **kwargs))
+
+
+def plot_ram_runtime_model(
+        log, xvals, plotname=None, ram_unit="MiB", time_unit="s", **kwargs):
+    """
+    Creates a summary plot and an exponential runtime and RAM model from a
+    list of stats dicts or logfilenames.
+
+    Parameters
+    ----------
+    log : list of str or list of dict
+        If str, is interpreted as a logging filename and tries to load the log
+        stats from there. Otherwise expects a logging dict directly. Uses the
+        keys 'sample_time'"' and 'RSS'.
+    xvals : array-like
+        X values per logged stat. Must have same length as `log` and be numeric.
+        For best plot results, `log` and `xvals` should be sorted ascending
+        after `xvals`.
+    plotname : str or None, optional (default: None)
+        If str, saves the plot under that filename using `plt.savefig`.
+        Otherwise the plot is shown interactively with `plt.show()`.
+    ram_unit : str, optional (default: 'MiB')
+        Unit to plot the RSS usage in. Can be 'K(i)B', 'M(i)B', 'G(i)B'.
+    time_unit : str, optional (default: 's')
+        Unit to plot the runtime in. Can be 's' ,'m', 'h'.
+    kwargs : Plot arguments
+        These are passed to the plot instances via a prefix:
+        - 'fig_<name>' is passed to `plt.subplots(1, 1, ...)`. Example:
+          `fig_figsize(10, 6)` makes a larger figure.
+        - 'plt_model_<name>' is passed to `plt.plot` of the data point plots.
+          Defaults: 'c': 'k', 'ls': '-', 'marker': ''.
+        - 'plt_data_<name>' is passed to `plt.plot` of the model curve plots
+          Defaults: 'lw': 1, 'ls': ':', 'marker': 'o'.
+        - 'fillb_<name>' is passed to `plt.fill_between` of model buffer range
+          plot. Defaults: 'color': 'C7', 'alpha': 0.5.
+        - 'grid_<name>' is passed to `plt.grid`.
+        - 'savefig_<name>' is passed `plt.savefig(plotname, ...)`. Example:
+          `savefig_dpi=200` for increasing the resolution.
+        Others are:
+        - 'ylim_time' sets the ylim for the runtime plot.
+        - 'ylim_ram' sets the ylabel for the max(RAM) plot.
+        - 'xlabel' sets the xlabel on both plots.
+        - 'xlim' sets the xlim on both plots.
+        - 'title_time' sets the title for the runtime plot, default:
+          'Runtime model'.
+        - 'title_ram' sets the title for the runtime plot, default:
+          'max(RAM) model'.
+        - 'suptitle' sets the figure suptitle.
+    """
+    stats = []
+    for j, log_ in enumerate(log):
+        if isinstance(log_, str):
+            stats.append(load_log(log_))
+        elif isinstance(log_, dict):
+            stats.append(log_)
+        else:
+            raise TypeError(
+                "`log` entry at {} must be either str or dict.".format(j))
+
+    xvals = np.atleast_1d(xvals)
+    if len(xvals) != len(stats):
+        raise ValueError("Need a unique x value for each log.")
+
+    r_units = {"kb": 1.024, "kib": 1., "mb": 1.024e-3, "mib": 1. / 1024,
+               "gb": 1.024e-6, "gib": 1. / 1024**2}
+    if ram_unit.lower() not in r_units:
+        raise ValueError("`ram_unit` can be {}".format(
+            ", ".join([k for k in r_units])))
+
+    t_units = {"s": 1., "m": 1. / 60., "h": 1. / 3600.}
+    if time_unit.lower() not in t_units:
+        raise ValueError("`time_unit` can be {}".format(
+            ", ".join([k for k in t_units])))
+
+    # Prepare data points
+    rts, rams = [], []
+    for stat in stats:
+        rts.append(stat["sample_time"].astype(float))
+        rams.append(stat["RSS"].astype(float))
+    rams_max = np.array([r.max() for r in rams]) * r_units[ram_unit.lower()]
+    rts_max = np.array([t[-1] for t in rts]) * t_units[time_unit.lower()]
+
+    # Put each one in overview plot
+    p_rams = np.polyfit(xvals, np.log(rams_max), deg=1)
+    p_rts = np.polyfit(xvals, np.log(rts_max), deg=1)
+
+    fig, (axl, axr) = plt.subplots(1, 2, **pkwargs("fig_", **kwargs))
+
+    # Plot model
+    x = np.linspace(xvals[0], xvals[-1], 100)
+    y_rts = np.exp(np.polyval(p_rts, x))
+    y_rams = np.exp(np.polyval(p_rams, x))
+    _kwargs = pkwargs("plt_model_", **kwargs)
+    _kwargs["c"] = _kwargs.get("c", "k")
+    _kwargs["ls"] = _kwargs.get("ls", "-")
+    _kwargs["marker"] = _kwargs.get("marker", "")
+    axl.plot(x, y_rts, **_kwargs)
+    axr.plot(x, y_rams, **_kwargs)
+
+    # Plot data
+    _kwargs = pkwargs("plt_data_", **kwargs)
+    # Set nice defaults
+    _kwargs["lw"] = _kwargs.get("lw", 1)
+    _kwargs["ls"] = _kwargs.get("ls", ":")
+    _kwargs["marker"] = _kwargs.get("marker", "o")
+    axl.plot(xvals, rts_max, **_kwargs, label="Runtime")
+    axr.plot(xvals, rams_max, **_kwargs, label="max(RAM)")
+
+    # Add 2GB or 15% percent buffer RAM request and use integer vals as estimate
+    _kwargs = pkwargs("fillb_", **kwargs)
+    _kwargs["color"] = _kwargs.get("color", "C7")
+    _kwargs["alpha"] = _kwargs.get("alpha", 0.5)
+    axr.fill_between(
+        x, y_rams, np.ceil(np.maximum(1 + y_rams, 1.15 * y_rams)), **_kwargs)
+
+    axl.set_ylabel("Time in {}".format(time_unit.lower()))
+    _unit_str = ram_unit.upper().replace("I", "i")
+    axr.set_ylabel("RAM in {}".format(_unit_str))
+    if "ylim_time" in kwargs:
+        axl.set_ylim(kwargs["ylim_time"])
+    if "ylim_ram" in kwargs:
+        axr.set_ylim(kwargs["ylim_ram"])
+
+    for ax in (axl, axr):
+        if "xlabel" in kwargs:
+            ax.set_xlim(kwargs["xlabel"])
+        if "xlim" in kwargs:
+            ax.set_xlim(kwargs["xlim"])
+
+    axl.set_title(kwargs.get("title_time", "Runtime model"))
+    axr.set_title(kwargs.get("title_ram", "max(RAM) model"))
+    if "suptitle" in kwargs:
+        fig.suptitle(kwargs["suptitle"])
+
+    axl.grid(**pkwargs("grid_", **kwargs))
+    axr.grid(**pkwargs("grid_", **kwargs))
+
+    fig.tight_layout()
+    if plotname is None:
+        plt.show()
+    else:
+        fig.savefig(plotname, **pkwargs("savefig_", **kwargs))
+
+    return p_rts, p_rams
 
 
 def sample_ps():
