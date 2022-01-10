@@ -51,7 +51,8 @@ def load_log(fname):
     return{k: np.array(v) for k, v in logs.items()}
 
 
-def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
+def summary_plot_ram(
+        log, plotname=None, ram_unit="MiB", time_unit="s", **kwargs):
     """
     Creates a summary plot from a logging file or dict showing the RAM (RSS)
     usage over logged time.
@@ -68,6 +69,8 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
         Otherwise the plot is shown interactively with `plt.show()`.
     ram_unit : str, optional (default: 'MiB')
         Unit to plot the RSS usage in. Can be 'K(i)B', 'M(i)B', 'G(i)B'.
+    time_unit : str, optional (default: 's')
+        Unit to plot the runtime in. Can be 's' ,'m', 'h'.
     kwargs : Plot arguments
         These are passed to the plot instances via a prefix:
         - 'fig_<name>' is passed to `plt.subplots(1, 1, ...)`. Example:
@@ -78,6 +81,7 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
           `axvline_c='k', axvline_ls='--'` makes them black and dashed.
           You can't specify 'axvline_label' because that is reserved for the
           tagnames in the log stats.
+        - 'grid_<name>' is passed to `plt.grid`.
         - 'legend_<name>' is passed to the legend. Example:
           `legend_loc='upper right' places the legend.
         - 'savefig_<name>' is passed `plt.savefig(plotname, ...)`. Example:
@@ -128,16 +132,22 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
         raise ValueError("`ram_unit` can be {}".format(
             ", ".join([k for k in units])))
 
+    t_units = {"s": 1., "m": 1. / 60., "h": 1. / 3600.}
+    if time_unit.lower() not in t_units:
+        raise ValueError("`time_unit` can be {}".format(
+            ", ".join([k for k in t_units])))
+
     # Put each one in overview plot
     label_coll = []
     fig, ax = plt.subplots(1, 1, **pkwargs("fig_", **kwargs))
     for k, stats_ in enumerate(stats):
         rss = np.array(stats_["RSS"], dtype=float) * units[ram_unit.lower()]
-        times = np.array(stats_["sample_time"], dtype=float)
+        times = np.array(
+            stats_["sample_time"], dtype=float) * t_units[time_unit.lower()]
         tags = stats_["tags"]
 
         _l = ax.plot(times, rss, **pkwargs("plot_", **kwargs))
-        if kwargs["labels"] is not None:
+        if kwargs.get("labels", None) is not None:
             label_coll.append((_l[0], kwargs["labels"][k]))
 
         if "axvline_c" in kwargs:
@@ -148,7 +158,7 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
         for j, tag in enumerate(tags):
             ax.axvline(tag[0], 0, 1, c=colors[j], label=tag[1],
                        **pkwargs("axvline_", **kwargs))
-    ax.set_xlabel("Time in s")
+    ax.set_xlabel("Time in {}".format(time_unit.lower()))
     _unit_str = ram_unit.upper().replace("I", "i")
     ax.set_ylabel("RAM in {}".format(_unit_str))
     if "xlim" in kwargs:
@@ -157,6 +167,8 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
         ax.set_ylim(kwargs["ylim"])
     if "title" in kwargs:
         ax.set_title(kwargs["title"])
+
+    ax.grid(**pkwargs("grid_", **kwargs))
 
     # Craft multiple legends. TODO: Independent loc keyword args
     if label_coll:
@@ -175,7 +187,8 @@ def summary_plot_ram(log, plotname=None, ram_unit="MiB", **kwargs):
 
 
 def plot_ram_runtime_model(
-        log, xvals, plotname=None, ram_unit="MiB", time_unit="s", **kwargs):
+    log, xvals, model="exp", model_p0=None,
+        plotname=None, ram_unit="MiB", time_unit="s", **kwargs):
     """
     Creates a summary plot and an exponential runtime and RAM model from a
     list of stats dicts or logfilenames.
@@ -185,11 +198,24 @@ def plot_ram_runtime_model(
     log : list of str or list of dict
         If str, is interpreted as a logging filename and tries to load the log
         stats from there. Otherwise expects a logging dict directly. Uses the
-        keys 'sample_time'"' and 'RSS'.
+        keys 'sample_time' and 'RSS'.
     xvals : array-like
         X values per logged stat. Must have same length as `log` and be numeric.
         For best plot results, `log` and `xvals` should be sorted ascending
         after `xvals`.
+    model : str or dict of callables
+        If str, can be 'exp' or 'log'. Then, the data is linearized by
+        `y->log(y)` for 'exp' or `x->log(x)` for 'log' and a linear fit is done.
+        Else, the given callables are used in `scipy.optimize.curve_fit` and
+        must take the independent variable as the first argument and the
+        parameters to fit as separate remaining arguments.
+        `model["rts"]` is used for the runtime and `model["ram"]` is used for
+        the RAM model.
+    model_p0 : dict of tuples or None, optional (default: None)
+        Model seed parameters for for each fit. `model_po["rts"]` is used for
+        the runtime and `model_po["ram"]` is used for the RAM model fit. If
+        `None` or any value is `None`, then `scipy.optimize.curve_fit` sets them
+        to be all 1.
     plotname : str or None, optional (default: None)
         If str, saves the plot under that filename using `plt.savefig`.
         Otherwise the plot is shown interactively with `plt.show()`.
@@ -220,6 +246,21 @@ def plot_ram_runtime_model(
         - 'title_ram' sets the title for the runtime plot, default:
           'max(RAM) model'.
         - 'suptitle' sets the figure suptitle.
+
+    Returns
+    -------
+    f_rts : callable
+        Returns the best fit values of the runtime model for given x-value.
+        Callable via `f_rts(x)`.
+    f_rams : callable
+        Returns the best fit values of the RAM model for given x-value.
+        Callable via `f_rams(x)`.
+    p_rts: tuple
+        Parameter for the runtime model. The fit was done using a logarithmic
+        linear fit, so get the values with `np.exp(np.polyval(p_rts, x))`.
+    p_rams: tuple
+        Parameter for the RAM model. The fit was done using a logarithmic
+        linear fit, so get the values with `np.exp(np.polyval(p_rams, x))`.
     """
     stats = []
     for j, log_ in enumerate(log):
@@ -249,21 +290,37 @@ def plot_ram_runtime_model(
     # Prepare data points
     rts, rams = [], []
     for stat in stats:
-        rts.append(stat["sample_time"].astype(float))
-        rams.append(stat["RSS"].astype(float))
+        rts.append(np.array(stat["sample_time"]).astype(float))
+        rams.append(np.array(stat["RSS"]).astype(float))
     rams_max = np.array([r.max() for r in rams]) * r_units[ram_unit.lower()]
     rts_max = np.array([t[-1] for t in rts]) * t_units[time_unit.lower()]
 
-    # Put each one in overview plot
-    p_rams = np.polyfit(xvals, np.log(rams_max), deg=1)
-    p_rts = np.polyfit(xvals, np.log(rts_max), deg=1)
+    # Build the model
+    if model == "exp":
+        p_rams = np.polyfit(xvals, np.log(rams_max), deg=1)
+        p_rts = np.polyfit(xvals, np.log(rts_max), deg=1)
+        f_rams = lambda x: np.exp(np.polyval(p_rams, x))
+        f_rts = lambda x: np.exp(np.polyval(p_rts, x))
+    elif model == "log":
+        p_rams = np.polyfit(np.log(xvals), rams_max, deg=1)
+        p_rts = np.polyfit(np.log(xvals), rts_max, deg=1)
+        f_rams = lambda x: np.polyval(p_rams, np.log(x))
+        f_rts = lambda x: np.polyval(p_rts, np.log(x))
+    else:
+        from scipy.optimize import curve_fit
+        if model_p0 is None:
+            model_p0 = {"rts": None, "ram": None}
+        p_rams, _ = curve_fit(model["ram"], xvals, rams_max, p0=model_p0["ram"])
+        p_rts, _ = curve_fit(model["rts"], xvals, rts_max, p0=model_p0["rts"])
+        f_rams = lambda x: model["ram"](x, *p_rams)
+        f_rts = lambda x: model["rts"](x, *p_rts)
 
     fig, (axl, axr) = plt.subplots(1, 2, **pkwargs("fig_", **kwargs))
 
     # Plot model
     x = np.linspace(xvals[0], xvals[-1], 100)
-    y_rts = np.exp(np.polyval(p_rts, x))
-    y_rams = np.exp(np.polyval(p_rams, x))
+    y_rts = f_rts(x)
+    y_rams = f_rams(x)
     _kwargs = pkwargs("plt_model_", **kwargs)
     _kwargs["c"] = _kwargs.get("c", "k")
     _kwargs["ls"] = _kwargs.get("ls", "-")
@@ -315,7 +372,7 @@ def plot_ram_runtime_model(
     else:
         fig.savefig(plotname, **pkwargs("savefig_", **kwargs))
 
-    return p_rts, p_rams
+    return f_rts, f_rams, p_rts, p_rams
 
 
 def sample_ps():
