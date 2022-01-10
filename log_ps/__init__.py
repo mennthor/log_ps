@@ -544,7 +544,6 @@ class PSLogger(threading.Thread):
             _dt = time.time() - _t0
             if self._stop_trigger.wait(timeout=max(0, self._interval - _dt)):
                 self._save_output()
-                print("Logging stopped by calling `stop()`.")
                 break
 
     def _save_output(self):
