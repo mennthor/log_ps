@@ -261,6 +261,10 @@ def plot_ram_runtime_model(
     p_rams: tuple
         Parameter for the RAM model. The fit was done using a logarithmic
         linear fit, so get the values with `np.exp(np.polyval(p_rams, x))`.
+    rts_max : ndarray
+        Runtime maximum values.
+    rams_max : ndarray
+        RAM maximum values.
     """
     stats = []
     for j, log_ in enumerate(log):
@@ -354,7 +358,7 @@ def plot_ram_runtime_model(
 
     for ax in (axl, axr):
         if "xlabel" in kwargs:
-            ax.set_xlim(kwargs["xlabel"])
+            ax.set_xlabel(kwargs["xlabel"])
         if "xlim" in kwargs:
             ax.set_xlim(kwargs["xlim"])
 
@@ -372,7 +376,7 @@ def plot_ram_runtime_model(
     else:
         fig.savefig(plotname, **pkwargs("savefig_", **kwargs))
 
-    return f_rts, f_rams, p_rts, p_rams
+    return f_rts, f_rams, p_rts, p_rams, rts_max, rams_max
 
 
 def sample_ps():
