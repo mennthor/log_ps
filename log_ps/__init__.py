@@ -203,19 +203,20 @@ def plot_ram_runtime_model(
         X values per logged stat. Must have same length as `log` and be numeric.
         For best plot results, `log` and `xvals` should be sorted ascending
         after `xvals`.
-    model : str or dict of callables
+    model : str or dict, optional (default: 'exp')
         If str, can be 'exp' or 'log'. Then, the data is linearized by
         `y->log(y)` for 'exp' or `x->log(x)` for 'log' and a linear fit is done.
-        Else, the given callables are used in `scipy.optimize.curve_fit` and
-        must take the independent variable as the first argument and the
-        parameters to fit as separate remaining arguments.
-        `model["rts"]` is used for the runtime and `model["ram"]` is used for
-        the RAM model.
+        If dict, must contain keys 'ram' and 'rts' for the RAM and runtime fits.
+        Keys can be either 'exp', 'log', or a callable. If callables are given,
+        they are used in `scipy.optimize.curve_fit` and must take the
+        independent variable as the first argument and the parameters to fit as
+        separate remaining arguments (eg. `func(x, a, b, c)` with `a, b, c`
+        being the fit parameters).
     model_p0 : dict of tuples or None, optional (default: None)
-        Model seed parameters for for each fit. `model_po["rts"]` is used for
-        the runtime and `model_po["ram"]` is used for the RAM model fit. If
-        `None` or any value is `None`, then `scipy.optimize.curve_fit` sets them
-        to be all 1.
+        Model seed parameters for for each fit. `model_p0['rts']` is used for
+        the runtime and `model_p0['ram']` is used for the RAM model fit. If
+        `None` or any value is `None`, then `scipy.optimize.curve_fit` sets all
+        to 1 automatically.
     plotname : str or None, optional (default: None)
         If str, saves the plot under that filename using `plt.savefig`.
         Otherwise the plot is shown interactively with `plt.show()`.
@@ -276,6 +277,7 @@ def plot_ram_runtime_model(
             raise TypeError(
                 "`log` entry at {} must be either str or dict.".format(j))
 
+    # Input checks
     xvals = np.atleast_1d(xvals)
     if len(xvals) != len(stats):
         raise ValueError("Need a unique x value for each log.")
@@ -291,6 +293,19 @@ def plot_ram_runtime_model(
         raise ValueError("`time_unit` can be {}".format(
             ", ".join([k for k in t_units])))
 
+    if not isinstance(model, dict):
+        model = {"rts": model, "ram": model}
+    else:
+        if "rts" not in model or "ram" not in model:
+            raise ValueError("`model` must contain keys 'rts' and 'ram'.")
+
+    if model_p0 is None:
+        model_p0 = {"rts": None, "ram": None}
+    else:
+        # Fill in missing. Eg, when model['ram'] is 'exp', no need to specify p0
+        model_p0["rts"] = model_p0.get("rts", None)
+        model_p0["ram"] = model_p0.get("ram", None)
+
     # Prepare data points
     rts, rams = [], []
     for stat in stats:
@@ -300,25 +315,27 @@ def plot_ram_runtime_model(
     rts_max = np.array([t[-1] for t in rts]) * t_units[time_unit.lower()]
 
     # Build the model
-    if model == "exp":
-        p_rams = np.polyfit(xvals, np.log(rams_max), deg=1)
-        p_rts = np.polyfit(xvals, np.log(rts_max), deg=1)
-        f_rams = lambda x: np.exp(np.polyval(p_rams, x))
-        f_rts = lambda x: np.exp(np.polyval(p_rts, x))
-    elif model == "log":
-        p_rams = np.polyfit(np.log(xvals), rams_max, deg=1)
-        p_rts = np.polyfit(np.log(xvals), rts_max, deg=1)
-        f_rams = lambda x: np.polyval(p_rams, np.log(x))
-        f_rts = lambda x: np.polyval(p_rts, np.log(x))
-    else:
-        from scipy.optimize import curve_fit
-        if model_p0 is None:
-            model_p0 = {"rts": None, "ram": None}
-        p_rams, _ = curve_fit(model["ram"], xvals, rams_max, p0=model_p0["ram"])
-        p_rts, _ = curve_fit(model["rts"], xvals, rts_max, p0=model_p0["rts"])
-        f_rams = lambda x: model["ram"](x, *p_rams)
-        f_rts = lambda x: model["rts"](x, *p_rts)
+    fit_res = {}
+    _maxvals = {"rts": rts_max, "ram": rams_max}
+    for name, val in model.items():
+        if val == "exp":
+            # Take log of y and make a linear fit
+            _p = np.polyfit(xvals, np.log(_maxvals[name]), deg=1)
+            _f = lambda x, p=_p: np.exp(np.polyval(p, x))
+        elif val == "log":
+            # Take log of x and make a linear fit
+            _p = np.polyfit(np.log(xvals), _maxvals[name], deg=1)
+            _f = lambda x, p=_p: np.polyval(p, np.log(x))
+        else:
+            from scipy.optimize import curve_fit
+            _p = curve_fit(
+                model[name], xvals, _maxvals[name], p0=model_p0[name])[0]
+            _f = lambda x, p=_p: model[name](x, *p)
+        fit_res.update({"f_" + name: _f, "p_" + name: _p})
+    p_rams, f_rams = fit_res["p_ram"], fit_res["f_ram"]
+    p_rts, f_rts = fit_res["p_rts"], fit_res["f_rts"]
 
+    # Now for the plot
     fig, (axl, axr) = plt.subplots(1, 2, **pkwargs("fig_", **kwargs))
 
     # Plot model
