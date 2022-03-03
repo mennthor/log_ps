@@ -94,6 +94,8 @@ def summary_plot_ram(
         - 'xlim', 'ylim' tuple to set the plot limits, passed to
           `ax.set_[x,y]lim`.
         - 'title' to set the plot title.
+        - 'ax', a matplotlib axis instance to draw on. If not given, a new
+          figure and axis is made.
 
     Example
     -------
@@ -139,7 +141,12 @@ def summary_plot_ram(
 
     # Put each one in overview plot
     label_coll = []
-    fig, ax = plt.subplots(1, 1, **pkwargs("fig_", **kwargs))
+    if "ax" in kwargs:
+        ax = kwargs["ax"]
+        fig = ax.get_figure()
+    else:
+        fig, ax = plt.subplots(1, 1, **pkwargs("fig_", **kwargs))
+
     for k, stats_ in enumerate(stats):
         rss = np.array(stats_["RSS"], dtype=float) * units[ram_unit.lower()]
         times = np.array(
@@ -180,9 +187,7 @@ def summary_plot_ram(
         if label_coll:
             ax.add_artist(leg1)
 
-    if plotname is None:
-        plt.show()
-    else:
+    if plotname is not None:
         fig.savefig(plotname, **pkwargs("savefig_", **kwargs))
 
 
@@ -247,6 +252,9 @@ def plot_ram_runtime_model(
         - 'title_ram' sets the title for the runtime plot, default:
           'max(RAM) model'.
         - 'suptitle' sets the figure suptitle.
+        - 'ax', a 2-tuple `(ax_rts, ax_ram)` of matplotlib axis instance to draw
+          on. If not given, a new figure and axes are made. The first element is
+          used for the runtime plot, the second one for the RAM plot.
 
     Returns
     -------
@@ -336,7 +344,11 @@ def plot_ram_runtime_model(
     p_rts, f_rts = fit_res["p_rts"], fit_res["f_rts"]
 
     # Now for the plot
-    fig, (axl, axr) = plt.subplots(1, 2, **pkwargs("fig_", **kwargs))
+    if "ax" in kwargs:
+        axl, axr = kwargs["ax"]
+        fig = axl.get_figure()
+    else:
+        fig, (axl, axr) = plt.subplots(1, 2, **pkwargs("fig_", **kwargs))
 
     # Plot model
     x = np.linspace(xvals[0], xvals[-1], 100)
@@ -387,10 +399,10 @@ def plot_ram_runtime_model(
     axl.grid(**pkwargs("grid_", **kwargs))
     axr.grid(**pkwargs("grid_", **kwargs))
 
-    fig.tight_layout()
-    if plotname is None:
-        plt.show()
-    else:
+    if "ax" not in kwargs:
+        fig.tight_layout()
+
+    if plotname is not None:
         fig.savefig(plotname, **pkwargs("savefig_", **kwargs))
 
     return f_rts, f_rams, p_rts, p_rams, rts_max, rams_max
